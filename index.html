@@ -64,17 +64,6 @@
       pointer-events:none; /* 先不允许交互，保证框选好用；后面再加“点选/拖动” */
     }
 
-    .finger {
-      position: absolute;
-      width: 70px;
-      height: 70px;
-      border-radius: 50%;
-      background-color: rgba(255, 0, 0, 0);
-      border: 2px solid rgba(255,255,255,.85);
-      pointer-events: none;
-      z-index: 7;
-    }
-
     .hint{
       position:absolute; left:12px; bottom:12px; z-index:9;
       padding:10px 12px;
@@ -101,7 +90,7 @@
 
 <script>
 /* =========================================================
-   核心思路：
+   核心思路（这次是“正确方向”）：
    - video 始终实时播放，作为底图
    - 每次框选 ROI 后，把 video 当前帧中对应区域裁成一张“静止贴片”
    - 用一个绝对定位的 canvas 叠在 video 上，位置就是 ROI 在屏幕上的位置
@@ -118,15 +107,8 @@ let startPt = null;
 let roi = null; // {x,y,w,h} in stage CSS pixels
 let freezes = []; // {el, x,y,w,h}
 
-let fingers = []; // 用来显示手指的圆圈
-let touchDistance = 0; // 两指间的距离
-let touchAngle = 0; // 两指间的角度
-
 function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
 
-/**
- * 启动相机，设置视频流并开始播放
- */
 async function startCamera(){
   if (!navigator.mediaDevices?.getUserMedia) {
     alert("当前浏览器不支持 getUserMedia。请用 Safari/Chrome。");
@@ -150,22 +132,13 @@ async function startCamera(){
   }
 }
 
-/**
- * 获取触摸/鼠标相对于页面的坐标
- * @param {PointerEvent} e - 事件对象
- * @returns {Object} 返回坐标 { x, y }
- */
 function localPoint(e){
   const r = stage.getBoundingClientRect();
   const cx = e.clientX ?? e.touches?.[0]?.clientX;
   const cy = e.clientY ?? e.touches?.[0]?.clientY;
-  return { x: cx - r.left, y: cy - r.top };
+  return { x: cx - r.left, y: cy - r.top, W: r.width, H: r.height };
 }
 
-/**
- * 显示选区框
- * @param {Object} rect - 选区的矩形区域 {x, y, w, h}
- */
 function showROI(rect){
   roiBox.style.display = "block";
   roiBox.style.left = rect.x + "px";
@@ -173,70 +146,9 @@ function showROI(rect){
   roiBox.style.width  = rect.w + "px";
   roiBox.style.height = rect.h + "px";
 }
+function hideROI(){ roiBox.style.display = "none"; }
 
-/**
- * 隐藏选区框
- */
-function hideROI() { roiBox.style.display = "none"; }
-
-/**
- * 创建一个手指圆圈，用户用来标示触摸点
- * @param {number} x - 手指x坐标
- * @param {number} y - 手指y坐标
- * @returns {HTMLElement} 返回创建的手指圈元素
- */
-function createFingerCircle(x, y) {
-  const finger = document.createElement("div");
-  finger.classList.add("finger");
-  finger.style.left = `${x - 35}px`; // 确保圆圈居中
-  finger.style.top = `${y - 35}px`; // 确保圆圈居中
-  stage.appendChild(finger);
-  return finger;
-}
-
-/**
- * 更新所有的手指圈显示
- * @param {TouchList} touches - 当前的触摸点列表
- */
-function updateFingerCircles(touches) {
-  fingers.forEach(finger => finger.remove());
-  fingers = [];
-
-  Array.from(touches).forEach(touch => {
-    const { clientX, clientY } = touch;
-    const finger = createFingerCircle(clientX, clientY);
-    fingers.push(finger);
-  });
-}
-
-/**
- * 旋转和缩放冻结区域的大小
- */
-function updateFreezeSizeAndRotation() {
-  freezes.forEach(freeze => {
-    freeze.el.style.transform = `scale(${1 + (touchDistance / 200)}) rotate(${touchAngle}rad)`;
-  });
-}
-
-/**
- * 绘制路径（自由绘制）
- */
-function drawPath() {
-  ctx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
-  ctx.beginPath();
-  ctx.moveTo(path[0].x, path[0].y);
-  path.forEach(p => ctx.lineTo(p.x, p.y));
-  ctx.closePath();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "rgba(255, 0, 0, 0)";
-  ctx.lineCap = "round";
-  ctx.stroke();
-}
-
-/**
- * 处理鼠标/触摸按下事件
- */
-stage.addEventListener("pointerdown", (e) => {
+stage.addEventListener("pointerdown", (e)=>{
   // 只在 stage 空白处开始框选（避免点到 topbar）
   if (e.target !== stage && e.target !== video && e.target !== roiBox) return;
   if (!video.srcObject) return;
@@ -245,61 +157,106 @@ stage.addEventListener("pointerdown", (e) => {
   const p = localPoint(e);
   dragging = true;
   startPt = p;
-  path = [p];
-  showROI({ x:p.x, y:p.y, w:1, h:1 });
+  roi = { x:p.x, y:p.y, w:1, h:1 };
+  showROI(roi);
 });
 
-/**
- * 处理鼠标/触摸移动事件
- */
-stage.addEventListener("pointermove", (e) => {
+stage.addEventListener("pointermove", (e)=>{
   if (!dragging || !startPt) return;
   e.preventDefault();
   const p = localPoint(e);
-  path.push(p);
   const x = Math.min(startPt.x, p.x);
   const y = Math.min(startPt.y, p.y);
   const w = Math.abs(p.x - startPt.x);
   const h = Math.abs(p.y - startPt.y);
-  roi = { x, y, w, h };
+  roi = {
+    x: clamp(x, 0, startPt.W-1),
+    y: clamp(y, 0, startPt.H-1),
+    w: clamp(w, 1, startPt.W),
+    h: clamp(h, 1, startPt.H)
+  };
   showROI(roi);
-  drawPath();
 });
 
-/**
- * 处理鼠标/触摸放开事件
- */
-stage.addEventListener("pointerup", async (e) => {
+stage.addEventListener("pointerup", async (e)=>{
   if (!dragging) return;
   e.preventDefault();
   dragging = false;
 
-  if (path.length < 2) return;
+  if (!roi || roi.w < 8 || roi.h < 8) {
+    hideROI();
+    roi = null;
+    return;
+  }
 
-  const rect = {
-    x: Math.min(startPt.x, path[path.length - 1].x),
-    y: Math.min(startPt.y, path[path.length - 1].y),
-    w: Math.abs(path[path.length - 1].x - startPt.x),
-    h: Math.abs(path[path.length - 1].y - startPt.y)
-  };
-
-  showROI(rect);
-  await freezeROIToOverlay(rect);
+  await freezeROIToOverlay(roi);
   hideROI();
-  path = [];
+  roi = null;
 });
 
-/**
- * 把框选的区域从视频中裁剪并显示在上面
- */
+stage.addEventListener("pointercancel", ()=>{
+  dragging = false;
+  hideROI();
+  roi = null;
+});
+
+/* =========================================================
+   关键函数：把 ROI 从 video 像素空间裁出来，画到 overlay canvas
+   并把 overlay canvas 放回“同样的屏幕位置”
+========================================================= */
 async function freezeROIToOverlay(cssRect){
-  // 获取视频和stage的实际尺寸
+  // video 的真实像素
   const vw = video.videoWidth;
   const vh = video.videoHeight;
+  if (!vw || !vh) return;
+
+  // stage 的 CSS 尺寸
   const sw = stage.clientWidth;
   const sh = stage.clientHeight;
 
-  // 生成 overlay canvas，尺寸和 CSS 区域一致
+  // object-fit: cover 的反算：stage 上每个点映射到 video 像素
+  const videoAspect = vw / vh;
+  const stageAspect = sw / sh;
+
+  let drawW, drawH, offsetX, offsetY;
+  if (stageAspect > videoAspect) {
+    // stage 更宽：视频按宽撑满，高溢出
+    drawW = sw;
+    drawH = sw / videoAspect;
+    offsetX = 0;
+    offsetY = (sh - drawH) / 2;
+  } else {
+    // stage 更高：视频按高撑满，宽溢出
+    drawH = sh;
+    drawW = sh * videoAspect;
+    offsetY = 0;
+    offsetX = (sw - drawW) / 2;
+  }
+
+  // CSS ROI -> video 像素 ROI
+  // 注意：前置镜像显示时，屏幕X方向是反的，需要把映射也镜像回去
+  const isMirrored = (facingMode === "user");
+
+  // ROI 相对“视频投影区域”的归一化坐标
+  let nx = (cssRect.x - offsetX) / drawW;
+  const ny = (cssRect.y - offsetY) / drawH;
+  const nw = cssRect.w / drawW;
+  const nh = cssRect.h / drawH;
+
+  // 镜像处理：屏幕上的左边实际上对应视频的右边
+  if (isMirrored) nx = 1 - nx - nw;
+
+  let sx = Math.round(nx * vw);
+  let sy = Math.round(ny * vh);
+  let swp = Math.round(nw * vw);
+  let shp = Math.round(nh * vh);
+
+  sx = clamp(sx, 0, vw-1);
+  sy = clamp(sy, 0, vh-1);
+  swp = clamp(swp, 1, vw - sx);
+  shp = clamp(shp, 1, vh - sy);
+
+  // 生成 overlay canvas：尺寸用 CSS 尺寸（视觉上跟框选一致）
   const overlay = document.createElement("canvas");
   overlay.className = "freeze";
   overlay.style.left = cssRect.x + "px";
@@ -307,44 +264,44 @@ async function freezeROIToOverlay(cssRect){
   overlay.style.width  = cssRect.w + "px";
   overlay.style.height = cssRect.h + "px";
 
-  overlay.width = cssRect.w;
-  overlay.height = cssRect.h;
+  // canvas 内部分辨率：为了清晰，按 devicePixelRatio 放大
+  const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
+  overlay.width  = Math.round(cssRect.w * dpr);
+  overlay.height = Math.round(cssRect.h * dpr);
 
   const ctx = overlay.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
 
-  ctx.beginPath();
-  ctx.moveTo(path[0].x - cssRect.x, path[0].y - cssRect.y);
-  path.forEach(p => ctx.lineTo(p.x - cssRect.x, p.y - cssRect.y));
-  ctx.closePath();
-  ctx.clip();
-
+  // 把视频像素 ROI 缩放画到 overlay canvas
   ctx.drawImage(
     video,
-    (cssRect.x / sw) * vw, (cssRect.y / sh) * vh,
-    (cssRect.w / sw) * vw, (cssRect.h / sh) * vh,
+    sx, sy, swp, shp,
     0, 0, overlay.width, overlay.height
   );
 
   stage.appendChild(overlay);
   freezes.push({ el: overlay });
 
-  // 如果后续需要做“冻结窗可拖动/可选中”，修改 pointer-events 和事件绑定即可。
+  // 如果你后面想做“冻结窗可拖动/可选中”，把 pointer-events 改成 auto，
+  // 然后给 overlay 加 pointerdown 就行（我们下一步做）。
 }
 
 /* =========================================================
-   UI 按钮功能
+   UI 按钮
 ========================================================= */
-
 document.querySelector("#btnStart").addEventListener("click", startCamera);
-document.querySelector("#btnFlip").addEventListener("click", async () => {
+
+document.querySelector("#btnFlip").addEventListener("click", async ()=>{
   facingMode = (facingMode === "environment") ? "user" : "environment";
   await startCamera();
 });
-document.querySelector("#btnUndo").addEventListener("click", () => {
+
+document.querySelector("#btnUndo").addEventListener("click", ()=>{
   const last = freezes.pop();
   if (last?.el) last.el.remove();
 });
-document.querySelector("#btnClear").addEventListener("click", () => {
+
+document.querySelector("#btnClear").addEventListener("click", ()=>{
   freezes.forEach(f => f.el?.remove());
   freezes = [];
 });
