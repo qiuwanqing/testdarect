@@ -198,6 +198,7 @@ stage.addEventListener("pointercancel", ()=>{
   dragging = false;
   hideROI();
   roi = null;
+});
 
 /* =========================================================
    关键函数：把 ROI 从 video 像素空间裁出来，画到 overlay canvas
@@ -262,7 +263,7 @@ async function freezeROIToOverlay(cssRect){
   overlay.style.top  = cssRect.y + "px";
   overlay.style.width  = cssRect.w + "px";
   overlay.style.height = cssRect.h + "px";
-  
+
   // canvas 内部分辨率：为了清晰，按 devicePixelRatio 放大
   const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
   overlay.width  = Math.round(cssRect.w * dpr);
@@ -281,100 +282,8 @@ async function freezeROIToOverlay(cssRect){
   stage.appendChild(overlay);
   freezes.push({ el: overlay });
 
-  // 使 freeze 可以拖动和缩放
-  makeDraggable(overlay);
-  makeResizable(overlay);
-}
-
-/* =========================================================
-   拖动和缩放功能实现
-========================================================= */
-
-// 用来跟踪当前正在拖动/缩放的元素
-let draggingElement = null;
-let offsetX = 0, offsetY = 0; // 存储鼠标和元素的偏移量
-
-// 拖动函数
-function handleDragMove(e) {
-  if (!draggingElement) return;
-  const p = localPoint(e);
-  draggingElement.style.left = p.x - offsetX + "px";
-  draggingElement.style.top = p.y - offsetY + "px";
-}
-
-function handleDragStart(e) {
-  if (e.target !== draggingElement) return;
-  e.preventDefault();
-  const p = localPoint(e);
-  offsetX = p.x - parseInt(draggingElement.style.left, 10);
-  offsetY = p.y - parseInt(draggingElement.style.top, 10);
-  stage.addEventListener("pointermove", handleDragMove);
-}
-
-function handleDragEnd() {
-  stage.removeEventListener("pointermove", handleDragMove);
-  draggingElement = null;
-}
-
-function makeDraggable(el) {
-  el.addEventListener("pointerdown", (e) => {
-    draggingElement = el;
-    handleDragStart(e);
-  });
-  el.addEventListener("pointerup", handleDragEnd);
-  el.addEventListener("pointercancel", handleDragEnd);
-}
-
-// 缩放函数
-let resizingElement = null;
-let initialWidth, initialHeight, initialX, initialY;
-
-function handleResizeMove(e) {
-  if (!resizingElement) return;
-  const p = localPoint(e);
-  const deltaX = p.x - initialX;
-  const deltaY = p.y - initialY;
-
-  const newWidth = Math.max(50, initialWidth + deltaX);  // 限制最小宽度
-  const newHeight = Math.max(50, initialHeight + deltaY); // 限制最小高度
-
-  resizingElement.style.width = newWidth + "px";
-  resizingElement.style.height = newHeight + "px";
-}
-
-function handleResizeStart(e) {
-  if (e.target !== resizingElement) return;
-  e.preventDefault();
-  const p = localPoint(e);
-  initialX = p.x;
-  initialY = p.y;
-  initialWidth = parseInt(resizingElement.style.width, 10);
-  initialHeight = parseInt(resizingElement.style.height, 10);
-  stage.addEventListener("pointermove", handleResizeMove);
-}
-
-function handleResizeEnd() {
-  stage.removeEventListener("pointermove", handleResizeMove);
-  resizingElement = null;
-}
-
-function makeResizable(el) {
-  const resizeHandle = document.createElement("div");
-  resizeHandle.style.width = "12px";
-  resizeHandle.style.height = "12px";
-  resizeHandle.style.background = "rgba(255, 255, 255, 0.7)";
-  resizeHandle.style.position = "absolute";
-  resizeHandle.style.bottom = "0px";
-  resizeHandle.style.right = "0px";
-  resizeHandle.style.cursor = "se-resize";
-  el.appendChild(resizeHandle);
-
-  resizeHandle.addEventListener("pointerdown", (e) => {
-    resizingElement = el;
-    handleResizeStart(e);
-  });
-  resizeHandle.addEventListener("pointerup", handleResizeEnd);
-  resizeHandle.addEventListener("pointercancel", handleResizeEnd);
+  // 如果你后面想做“冻结窗可拖动/可选中”，把 pointer-events 改成 auto，
+  // 然后给 overlay 加 pointerdown 就行（我们下一步做）。
 }
 
 /* =========================================================
