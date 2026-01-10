@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>dada01</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    body { margin: 0; background:#0b0c10; color:#e8e8e8; }
+    button { font: inherit; }
+
+    .topbar{
+      position: sticky; top: 0; z-index: 10;
+      display:flex; gap:8px; align-items:center;
+      padding:10px;
+      border-bottom:1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.03);
+      backdrop-filter: blur(10px);
+    }
+    .topbar button{
+      padding:8px 10px; border-radius:10px;
+      border:1px solid rgba(255,255,255,.15);
+      background: rgba(255,255,255,.06);
+      color:#fff;
+    }
+    .small{ font-size:12px; opacity:.75; }
+
+    /* 画面容器：video + overlays 都叠在这里 */
+    #stage{
+      position: relative;
+      width: 100vw;
+      height: calc(100vh - 56px);
+      overflow: hidden;
+      touch-action: none; /* 关键：防止浏览器把拖动当滚动 */
+      background: #000;
+    }
+
+    #video{
+      position:absolute; inset:0;
+      width:100%; height:100%;
+      object-fit: cover;
+      transform-origin: center;
+    }
+
+    /* 选区框（仅在拖动时显示） */
+    #roiBox{
+      position:absolute;
+      border:0px solid rgba(255,255,255,.9);
+      background: rgba(255,255,255,.08);
+      border-radius: 0px;
+      pointer-events:none;
+      display:none;
+      z-index: 5;
+    }
+
+    /* 冻结窗：一个个 canvas 叠在 video 上 */
+    .freeze{
+      position:absolute;
+      left:0; top:0;
+      border-radius: 0px;
+      border: 0px solid rgba(255,255,255,.85);
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+      z-index: 6;
+      pointer-events:none; /* 先不允许交互，保证框选好用；后面再加“点选/拖动” */
+    }
+
+    .hint{
+      position:absolute; left:12px; bottom:12px; z-index:9;
+      padding:10px 12px;
+      border:1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.05);
+      border-radius: 14px;
+      max-width: 70vw;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="topbar">
+    <button id="btnStart">Start Camera</button>
+    <button id="btnFlip">Flip</button>
+    <button id="btnUndo">Undo</button>
+    <button id="btnClear">Clear</button>
+  </div>
+
+  <div id="stage">
+    <video id="video" playsinline muted></video>
+    <div id="roiBox"></div>
+  </div>
+
+<script>
+/* =========================================================
+   核心思路（这次是“正确方向”）：
+   - video 始终实时播放，作为底图
+   - 每次框选 ROI 后，把 video 当前帧中对应区域裁成一张“静止贴片”
+   - 用一个绝对定位的 canvas 叠在 video 上，位置就是 ROI 在屏幕上的位置
+========================================================= */
+
+const stage = document.querySelector("#stage");
+const video = document.querySelector("#video");
+const roiBox = document.querySelector("#roiBox");
+
+let stream = null;
+let facingMode = "environment"; // "environment" | "user"
+let dragging = false;
+let startPt = null;
+let roi = null; // {x,y,w,h} in stage CSS pixels
+let freezes = []; // {el, x,y,w,h}
+
+function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+async function startCamera(){
+  if (!navigator.mediaDevices?.getUserMedia) {
+    alert("当前浏览器不支持 getUserMedia。请用 Safari/Chrome。");
+    return;
+  }
+  if (stream) stream.getTracks().forEach(t => t.stop());
+
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    // 前置镜头时镜像显示（仅显示镜像，截图逻辑下面会处理）
+    video.style.transform = (facingMode === "user") ? "scaleX(-1)" : "none";
+  }catch(e){
+    console.error(e);
+    alert("无法打开相机：请检查权限；iOS 通常需要 https/localhost。");
+  }
+}
+
+function localPoint(e){
+  const r = stage.getBoundingClientRect();
+  const cx = e.clientX ?? e.touches?.[0]?.clientX;
+  const cy = e.clientY ?? e.touches?.[0]?.clientY;
+  return { x: cx - r.left, y: cy - r.top, W: r.width, H: r.height };
+}
+
+function showROI(rect){
+  roiBox.style.display = "block";
+  roiBox.style.left = rect.x + "px";
+  roiBox.style.top  = rect.y + "px";
+  roiBox.style.width  = rect.w + "px";
+  roiBox.style.height = rect.h + "px";
+}
+function hideROI(){ roiBox.style.display = "none"; }
+
+stage.addEventListener("pointerdown", (e)=>{
+  // 只在 stage 空白处开始框选（避免点到 topbar）
+  if (e.target !== stage && e.target !== video && e.target !== roiBox) return;
+  if (!video.srcObject) return;
+
+  e.preventDefault();
+  const p = localPoint(e);
+  dragging = true;
+  startPt = p;
+  roi = { x:p.x, y:p.y, w:1, h:1 };
+  showROI(roi);
+});
+
+stage.addEventListener("pointermove", (e)=>{
+  if (!dragging || !startPt) return;
+  e.preventDefault();
+  const p = localPoint(e);
+  const x = Math.min(startPt.x, p.x);
+  const y = Math.min(startPt.y, p.y);
+  const w = Math.abs(p.x - startPt.x);
+  const h = Math.abs(p.y - startPt.y);
+  roi = {
+    x: clamp(x, 0, startPt.W-1),
+    y: clamp(y, 0, startPt.H-1),
+    w: clamp(w, 1, startPt.W),
+    h: clamp(h, 1, startPt.H)
+  };
+  showROI(roi);
+});
+
+stage.addEventListener("pointerup", async (e)=>{
+  if (!dragging) return;
+  e.preventDefault();
+  dragging = false;
+
+  if (!roi || roi.w < 8 || roi.h < 8) {
+    hideROI();
+    roi = null;
+    return;
+  }
+
+  await freezeROIToOverlay(roi);
+  hideROI();
+  roi = null;
+});
+
+stage.addEventListener("pointercancel", ()=>{
+  dragging = false;
+  hideROI();
+  roi = null;
+});
+
+/* =========================================================
+   关键函数：把 ROI 从 video 像素空间裁出来，画到 overlay canvas
+   并把 overlay canvas 放回“同样的屏幕位置”
+========================================================= */
+async function freezeROIToOverlay(cssRect){
+  // video 的真实像素
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return;
+
+  // stage 的 CSS 尺寸
+  const sw = stage.clientWidth;
+  const sh = stage.clientHeight;
+
+  // object-fit: cover 的反算：stage 上每个点映射到 video 像素
+  const videoAspect = vw / vh;
+  const stageAspect = sw / sh;
+
+  let drawW, drawH, offsetX, offsetY;
+  if (stageAspect > videoAspect) {
+    // stage 更宽：视频按宽撑满，高溢出
+    drawW = sw;
+    drawH = sw / videoAspect;
+    offsetX = 0;
+    offsetY = (sh - drawH) / 2;
+  } else {
+    // stage 更高：视频按高撑满，宽溢出
+    drawH = sh;
+    drawW = sh * videoAspect;
+    offsetY = 0;
+    offsetX = (sw - drawW) / 2;
+  }
+
+  // CSS ROI -> video 像素 ROI
+  // 注意：前置镜像显示时，屏幕X方向是反的，需要把映射也镜像回去
+  const isMirrored = (facingMode === "user");
+
+  // ROI 相对“视频投影区域”的归一化坐标
+  let nx = (cssRect.x - offsetX) / drawW;
+  const ny = (cssRect.y - offsetY) / drawH;
+  const nw = cssRect.w / drawW;
+  const nh = cssRect.h / drawH;
+
+  // 镜像处理：屏幕上的左边实际上对应视频的右边
+  if (isMirrored) nx = 1 - nx - nw;
+
+  let sx = Math.round(nx * vw);
+  let sy = Math.round(ny * vh);
+  let swp = Math.round(nw * vw);
+  let shp = Math.round(nh * vh);
+
+  sx = clamp(sx, 0, vw-1);
+  sy = clamp(sy, 0, vh-1);
+  swp = clamp(swp, 1, vw - sx);
+  shp = clamp(shp, 1, vh - sy);
+
+  // 生成 overlay canvas：尺寸用 CSS 尺寸（视觉上跟框选一致）
+  const overlay = document.createElement("canvas");
+  overlay.className = "freeze";
+  overlay.style.left = cssRect.x + "px";
+  overlay.style.top  = cssRect.y + "px";
+  overlay.style.width  = cssRect.w + "px";
+  overlay.style.height = cssRect.h + "px";
+
+  // canvas 内部分辨率：为了清晰，按 devicePixelRatio 放大
+  const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
+  overlay.width  = Math.round(cssRect.w * dpr);
+  overlay.height = Math.round(cssRect.h * dpr);
+
+  const ctx = overlay.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+
+  // 把视频像素 ROI 缩放画到 overlay canvas
+  ctx.drawImage(
+    video,
+    sx, sy, swp, shp,
+    0, 0, overlay.width, overlay.height
+  );
+
+  stage.appendChild(overlay);
+  freezes.push({ el: overlay });
+
+  // 如果你后面想做“冻结窗可拖动/可选中”，把 pointer-events 改成 auto，
+  // 然后给 overlay 加 pointerdown 就行（我们下一步做）。
+}
+
+/* =========================================================
+   UI 按钮
+========================================================= */
+document.querySelector("#btnStart").addEventListener("click", startCamera);
+
+document.querySelector("#btnFlip").addEventListener("click", async ()=>{
+  facingMode = (facingMode === "environment") ? "user" : "environment";
+  await startCamera();
+});
+
+document.querySelector("#btnUndo").addEventListener("click", ()=>{
+  const last = freezes.pop();
+  if (last?.el) last.el.remove();
+});
+
+document.querySelector("#btnClear").addEventListener("click", ()=>{
+  freezes.forEach(f => f.el?.remove());
+  freezes = [];
+});
+</script>
+</body>
+</html>
