@@ -101,7 +101,7 @@
 
 <script>
 /* =========================================================
-   核心思路（这次是“正确方向”）：
+   核心思路：
    - video 始终实时播放，作为底图
    - 每次框选 ROI 后，把 video 当前帧中对应区域裁成一张“静止贴片”
    - 用一个绝对定位的 canvas 叠在 video 上，位置就是 ROI 在屏幕上的位置
@@ -348,7 +348,6 @@ document.querySelector("#btnClear").addEventListener("click", () => {
   freezes.forEach(f => f.el?.remove());
   freezes = [];
 });
-
 </script>
 </body>
 </html>
