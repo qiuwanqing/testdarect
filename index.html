@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>dada01</title>
+  <title>dada0101</title>
   <style>
     :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     body { margin: 0; background:#0b0c10; color:#e8e8e8; }
@@ -61,7 +61,13 @@
       border: 0px solid rgba(255,255,255,.85);
       box-shadow: 0 10px 30px rgba(0,0,0,.35);
       z-index: 6;
-      pointer-events:none; /* 先不允许交互，保证框选好用；后面再加“点选/拖动” */
+      pointer-events:auto; /* 允许交互 */
+      cursor: pointer; /* 设置鼠标样式为可点击 */
+    }
+
+    .freeze.selected{
+      border-color: rgba(255,255,255,.9); /* 选中时改变边框 */
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); /* 改变边框阴影来显示选中 */
     }
 
     .hint{
@@ -89,12 +95,10 @@
   </div>
 
 <script>
-/* =========================================================
-   核心思路（这次是“正确方向”）：
-   - video 始终实时播放，作为底图
-   - 每次框选 ROI 后，把 video 当前帧中对应区域裁成一张“静止贴片”
-   - 用一个绝对定位的 canvas 叠在 video 上，位置就是 ROI 在屏幕上的位置
-========================================================= */
+// 核心思路：
+// - video 始终实时播放，作为底图
+// - 每次框选 ROI 后，把 video 当前帧中对应区域裁成一张“静止贴片”
+// - 用一个绝对定位的 canvas 叠在 video 上，位置就是 ROI 在屏幕上的位置
 
 const stage = document.querySelector("#stage");
 const video = document.querySelector("#video");
@@ -106,6 +110,8 @@ let dragging = false;
 let startPt = null;
 let roi = null; // {x,y,w,h} in stage CSS pixels
 let freezes = []; // {el, x,y,w,h}
+let selectedFreeze = null; // 用于存储当前选中的冻结窗
+let dragOffset = { x: 0, y: 0 }; // 用于存储冻结窗拖拽的偏移量
 
 function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
 
@@ -199,7 +205,6 @@ stage.addEventListener("pointercancel", ()=>{
   hideROI();
   roi = null;
 });
-
 /* =========================================================
    关键函数：把 ROI 从 video 像素空间裁出来，画到 overlay canvas
    并把 overlay canvas 放回“同样的屏幕位置”
@@ -282,8 +287,21 @@ async function freezeROIToOverlay(cssRect){
   stage.appendChild(overlay);
   freezes.push({ el: overlay });
 
-  // 如果你后面想做“冻结窗可拖动/可选中”，把 pointer-events 改成 auto，
-  // 然后给 overlay 加 pointerdown 就行（我们下一步做）。
+  // 允许冻结窗被拖动：给每个 overlay 添加拖动功能
+  overlay.addEventListener("pointerdown", (e) => {
+    selectedFreeze = overlay;
+    selectedFreeze.classList.add("selected");
+    dragOffset = { x: e.clientX - selectedFreeze.offsetLeft, y: e.clientY - selectedFreeze.offsetTop };
+  });
+  overlay.addEventListener("pointermove", (e) => {
+    if (selectedFreeze) {
+      selectedFreeze.style.left = e.clientX - dragOffset.x + "px";
+      selectedFreeze.style.top = e.clientY - dragOffset.y + "px";
+    }
+  });
+  overlay.addEventListener("pointerup", () => {
+    selectedFreeze = null;
+  });
 }
 
 /* =========================================================
